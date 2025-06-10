@@ -1,6 +1,6 @@
 """
-Token server for LiveKit Voice Assistant
-Generates JWT tokens for Flutter clients to connect to LiveKit
+Token server for Arabic TTS Reader
+Generates JWT tokens for connecting to LiveKit rooms
 """
 
 from fastapi import FastAPI, HTTPException
@@ -10,6 +10,8 @@ from datetime import timedelta
 import os
 from dotenv import load_dotenv
 import logging
+import subprocess
+import psutil
 
 # Load environment variables
 load_dotenv()
@@ -18,9 +20,9 @@ load_dotenv()
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(title="Arabic TTS Token Server")
 
-# Configure CORS for web
+# Configure CORS for Flutter web
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # In production, specify your domains
@@ -29,36 +31,82 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# LiveKit credentials from .env
+# LiveKit credentials
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
-LIVEKIT_URL = os.getenv("LIVEKIT_URL")
+LIVEKIT_URL = os.getenv("LIVEKIT_URL", "wss://cloud.livekit.io")
 
 # Validate credentials on startup
-if not all([LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_URL]):
+if not all([LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
     logger.error("Missing LiveKit credentials in .env file")
-    logger.error(f"LIVEKIT_API_KEY: {'✓' if LIVEKIT_API_KEY else '✗'}")
-    logger.error(f"LIVEKIT_API_SECRET: {'✓' if LIVEKIT_API_SECRET else '✗'}")
-    logger.error(f"LIVEKIT_URL: {'✓' if LIVEKIT_URL else '✗'}")
 else:
     logger.info("LiveKit credentials loaded successfully")
     logger.info(f"LiveKit URL: {LIVEKIT_URL}")
 
+current_agent_process = None
+current_room_name = None
+
+def get_counter():
+    try:
+        with open('counter.txt', 'r') as f:
+            return int(f.read().strip())
+    except FileNotFoundError:
+        # Start from 50 if file doesn't exist
+        with open('counter.txt', 'w') as f:
+            f.write('50')
+        return 50
+
+def increment_counter():
+    counter = get_counter()
+    counter += 1
+    with open('counter.txt', 'w') as f:
+        f.write(str(counter))
+    return counter
+
+async def start_new_agent(room_name: str):
+    """Start a new TTS agent for a specific room in a new terminal window"""
+    global current_agent_process, current_room_name
+    
+    # Kill existing agent if any
+    if current_agent_process:
+        try:
+            parent = psutil.Process(current_agent_process.pid)
+            for child in parent.children(recursive=True):
+                child.kill()
+            parent.kill()
+            logger.info(f"Killed previous agent in room {current_room_name}")
+        except:
+            pass
+
+    # Start new agent with room name in new terminal
+    cmd = (
+        f'start powershell.exe -NoExit -Command "'
+        f'./venv/Scripts/activate; '
+        f'python -u agent.py connect --room {room_name}"'
+    )
+    
+    current_agent_process = subprocess.Popen(
+        cmd,
+        shell=True
+    )
+    current_room_name = room_name
+    
+    logger.info(f"Started new TTS agent for room {room_name} in new terminal")
+
 @app.get("/token")
 async def create_token(
-    identity: str = "flutter-user",
-    room: str = "voice-assistant"
+    identity: str = None,
+    room: str = None,
 ):
-    """
-    Generate a token for connecting to LiveKit
+    """Generate a token for connecting to LiveKit room for TTS"""
+    # Get and increment counter from file
+    counter = increment_counter()
     
-    Args:
-        identity: User identifier (default: flutter-user)
-        room: Room name to join (default: voice-assistant)
-    
-    Returns:
-        JSON with accessToken and url
-    """
+    # Generate default values if none provided
+    if identity is None:
+        identity = f"realtime-{counter}"
+    if room is None:
+        room = f"realtime-{counter}"
     
     if not LIVEKIT_API_KEY or not LIVEKIT_API_SECRET:
         raise HTTPException(
@@ -70,67 +118,61 @@ async def create_token(
         # Create access token
         token = api.AccessToken(LIVEKIT_API_KEY, LIVEKIT_API_SECRET)
         
-        # Set user identity
-        token.with_identity(identity).with_name(identity)
+        # Set token properties
+        token.ttl = timedelta(hours=2)
+        token.name = identity
+        token.identity = identity
         
         # Grant permissions
-        token.with_grants(api.VideoGrants(
-            room_join=True,
-            room=room,
-            can_publish=True,
-            can_subscribe=True,
-            can_publish_data=True,
-        ))
-        
-        # Set expiration (24 hours)
-        token.with_ttl(timedelta(hours=24))
+        token.with_grants(
+            api.VideoGrants(
+                room_join=True,
+                room=room,
+                can_publish=True,
+                can_subscribe=True,
+                can_publish_data=True,
+            )
+        )
         
         # Generate JWT
         jwt_token = token.to_jwt()
         
-        logger.info(f"Token generated for {identity} in room {room}")
+        logger.info(f"Generated token for {identity} in room {room}")
+        
+        # Start new agent for this room
+        await start_new_agent(room)  # Add this line!
         
         return {
             "accessToken": jwt_token,
             "url": LIVEKIT_URL,
-            "identity": identity,
-            "room": room
+            "room": room,
+            "identity": identity
         }
         
     except Exception as e:
-        logger.error(f"Error generating token: {e}")
-        raise HTTPException(status_code=500, detail=f"Token generation failed: {str(e)}")
+        logger.error(f"Failed to generate token: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
+    return {"status": "healthy", "service": "Arabic TTS Token Server"}
+
+
+@app.get("/debug")
+async def debug_info():
+    """Debug endpoint to check server status"""
     return {
-        "status": "healthy",
-        "livekit_configured": bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET),
-        "url": LIVEKIT_URL
+        "status": "running",
+        "default_room": "tts-reading-room",
+        "livekit_url": LIVEKIT_URL,
+        "credentials_loaded": bool(LIVEKIT_API_KEY and LIVEKIT_API_SECRET),
     }
 
-@app.get("/")
-async def root():
-    """Root endpoint with usage instructions"""
-    return {
-        "message": "LiveKit Token Server",
-        "endpoints": {
-            "/token": "Get access token for LiveKit",
-            "/health": "Health check",
-        },
-        "usage": "GET /token?identity=your-name&room=your-room"
-    }
 
 if __name__ == "__main__":
     import uvicorn
-    
     port = int(os.getenv("PORT", 8080))
     logger.info(f"Starting token server on port {port}")
-    
-    uvicorn.run(
-        app, 
-        host="0.0.0.0", 
-        port=port,
-        log_level=os.getenv("LOG_LEVEL", "info").lower()
-    )
+    uvicorn.run(app, host="0.0.0.0", port=port)

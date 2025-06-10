@@ -42,15 +42,11 @@ pip install -r requirements.txt
 
 ### 1. Start the Server Components
 
-Run both server components (preferably in separate terminals):
+You only have to run the token_server. It will automatically launch the agent in the right room.
 
 ```bash
-# Terminal 1 - Token Server
 python token_server.py
 
-# Terminal 2 - AI Agent
-python agent.py dev
-```
 
 ### 2. Integrate in Flutter App
 
