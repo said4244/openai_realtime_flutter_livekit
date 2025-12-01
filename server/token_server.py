@@ -1,8 +1,3 @@
-"""
-Token server for Arabic TTS Reader
-Generates JWT tokens for connecting to LiveKit rooms
-"""
-
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from livekit import api
@@ -13,16 +8,15 @@ import logging
 import subprocess
 import psutil
 
-# Load environment variables
+
 load_dotenv()
 
-# Set up logging
+
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Arabic TTS Token Server")
 
-# Configure CORS for Flutter web
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # In production, specify your domains
@@ -31,12 +25,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# LiveKit credentials
+
 LIVEKIT_API_KEY = os.getenv("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = os.getenv("LIVEKIT_API_SECRET")
 LIVEKIT_URL = os.getenv("LIVEKIT_URL", "wss://cloud.livekit.io")
 
-# Validate credentials on startup
+
 if not all([LIVEKIT_API_KEY, LIVEKIT_API_SECRET]):
     logger.error("Missing LiveKit credentials in .env file")
 else:
